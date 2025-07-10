@@ -1,0 +1,6 @@
+*.class
+target/
+auth.json
+admin.json
+current_chat.log
+archive/
