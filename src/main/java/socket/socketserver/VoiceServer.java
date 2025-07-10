@@ -6,27 +6,12 @@ import java.util.*;
 
 public class VoiceServer {
 
-    private static final int VOICE_PORT = 5555;
     private static final List<Socket> clients = Collections.synchronizedList(new ArrayList<>());
 
-    public static void start() {
-        new Thread(() -> {
-            try (ServerSocket serverSocket = new ServerSocket(VOICE_PORT)) {
-                System.out.println("Voice server started on port " + VOICE_PORT);
-
-                while (true) {
-                    Socket clientSocket = serverSocket.accept();
-                    clients.add(clientSocket);
-                    new Thread(() -> handleClient(clientSocket)).start();
-                }
-            } catch (IOException e) {
-                System.err.println("Voice server error: " + e.getMessage());
-            }
-        }).start();
-    }
-
-    private static void handleClient(Socket socket) {
-        try (InputStream in = socket.getInputStream()) {
+    public static void handleClient(Socket socket) {
+        try {
+            clients.add(socket);
+            InputStream in = socket.getInputStream();
             byte[] buffer = new byte[1024];
             int bytesRead;
 
@@ -39,7 +24,8 @@ public class VoiceServer {
             clients.remove(socket);
             try {
                 socket.close();
-            } catch (IOException ignored) {}
+            } catch (IOException ignored) {
+            }
         }
     }
 
