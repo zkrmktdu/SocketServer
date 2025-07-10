@@ -1,1 +1,1 @@
-web: java -cp target/SocketServer-1.0-SNAPSHOT.jar socket.socketserver.SocketServer 
+web: java -jar target/SocketServer-1.0-SNAPSHOT.jar
