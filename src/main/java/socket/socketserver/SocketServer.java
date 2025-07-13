@@ -22,8 +22,8 @@ public class SocketServer {
     private static ClientHandler currentClientHandler = null;
 
     public static void main(String[] args) throws IOException {
-        if (!AUTH_FILE.exists()) SocketServer.rotateCredentials();
-        if (!ADMIN_FILE.exists()) SocketServer.saveAdminCredentials(BUILT_IN_ADMIN_ID, BUILT_IN_ADMIN_PASS);
+        if (!AUTH_FILE.exists()) rotateCredentials();
+        if (!ADMIN_FILE.exists()) saveAdminCredentials(BUILT_IN_ADMIN_ID, BUILT_IN_ADMIN_PASS);
 
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
         ServerSocket serverSocket = new ServerSocket(port);
@@ -31,7 +31,6 @@ public class SocketServer {
 
         while (true) {
             Socket socket = serverSocket.accept();
-
             BufferedReader initReader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             String mode = initReader.readLine(); // Expecting "CHAT" or "VOICE"
 
@@ -43,6 +42,79 @@ public class SocketServer {
             }
         }
     }
+
+    // --- Utility Methods ---
+
+    private static JSONObject readAuthFile() {
+        try (BufferedReader reader = new BufferedReader(new FileReader(AUTH_FILE))) {
+            return new JSONObject(reader.readLine());
+        } catch (Exception e) {
+            System.err.println("Error reading auth file: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static JSONObject readAdminFile() {
+        try (BufferedReader reader = new BufferedReader(new FileReader(ADMIN_FILE))) {
+            return new JSONObject(reader.readLine());
+        } catch (Exception e) {
+            System.err.println("Error reading admin file: " + e.getMessage());
+            return null;
+        }
+    }
+
+    public static synchronized void rotateCredentials() {
+        try {
+            if (CHAT_LOG.exists()) {
+                String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+                File archiveDir = new File("archive");
+                if (!archiveDir.exists()) archiveDir.mkdir();
+                File archived = new File(archiveDir, "messages_" + timestamp + ".log");
+                CHAT_LOG.renameTo(archived);
+                CHAT_LOG.createNewFile();
+            }
+
+            String userId = UUID.randomUUID().toString().substring(0, 8);
+            String password = UUID.randomUUID().toString().substring(0, 8);
+            String hash = BCrypt.withDefaults().hashToString(12, password.toCharArray());
+
+            JSONObject obj = new JSONObject();
+            obj.put("userId", userId);
+            obj.put("passwordHash", hash);
+            obj.put("created", new Date().toString());
+
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(AUTH_FILE))) {
+                writer.write(obj.toString(2));
+            }
+
+            if (adminHandler != null) {
+                adminHandler.sendMessage("🆕 New Client Credentials:\nUser ID: " + userId + "\nPassword: " + password);
+            }
+
+            if (currentClientHandler != null) {
+                currentClientHandler.disconnect();
+                currentClientHandler = null;
+            }
+
+        } catch (Exception e) {
+            System.err.println("Error rotating credentials: " + e.getMessage());
+        }
+    }
+
+    private static void saveAdminCredentials(String id, String password) {
+        String hash = BCrypt.withDefaults().hashToString(12, password.toCharArray());
+        JSONObject obj = new JSONObject();
+        obj.put("adminId", id);
+        obj.put("passwordHash", hash);
+        obj.put("created", new Date().toString());
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(ADMIN_FILE))) {
+            writer.write(obj.toString(2));
+        } catch (IOException e) {
+            System.err.println("Error saving admin credentials.");
+        }
+    }
+
+    // --- ClientHandler Class ---
 
     static class ClientHandler implements Runnable {
         private final Socket socket;
@@ -59,14 +131,13 @@ public class SocketServer {
         public void run() {
             try {
                 out = new PrintWriter(socket.getOutputStream(), true);
-
                 out.println("Enter User ID:");
                 userId = in.readLine();
                 out.println("Enter Password:");
                 String password = in.readLine();
 
-                JSONObject auth = SocketServer.readAuthFile();
-                JSONObject admin = SocketServer.readAdminFile();
+                JSONObject auth = readAuthFile();
+                JSONObject admin = readAdminFile();
 
                 boolean builtInMatch = BUILT_IN_ADMIN_ID.equals(userId) && BUILT_IN_ADMIN_PASS.equals(password);
                 boolean dynamicAdminMatch = admin != null && admin.getString("adminId").equals(userId) &&
@@ -103,7 +174,7 @@ public class SocketServer {
                 String message;
                 while ((message = in.readLine()) != null) {
                     if (isAdmin && message.equalsIgnoreCase("/adduser")) {
-                        SocketServer.rotateCredentials();
+                        rotateCredentials();
                         continue;
                     }
 
@@ -162,75 +233,45 @@ public class SocketServer {
             }
         }
 
-        // sendArchive, logMessage, broadcast, etc. unchanged...
-    }
-
-    public static JSONObject readAuthFile() {
-        try (BufferedReader reader = new BufferedReader(new FileReader(AUTH_FILE))) {
-            return new JSONObject(reader.readLine());
-        } catch (Exception e) {
-            System.err.println("Error reading auth file: " + e.getMessage());
-            return null;
+        private void sendArchive(File file) {
+            try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+                String line;
+                while ((line = reader.readLine()) != null) out.println(line);
+            } catch (IOException e) {
+                out.println("❌ Failed to load archive.");
+            }
         }
-    }
 
-    public static JSONObject readAdminFile() {
-        try (BufferedReader reader = new BufferedReader(new FileReader(ADMIN_FILE))) {
-            return new JSONObject(reader.readLine());
-        } catch (Exception e) {
-            System.err.println("Error reading admin file: " + e.getMessage());
-            return null;
+        private void logMessage(String userId, String message) {
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(CHAT_LOG, true))) {
+                String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+                writer.write("[" + timestamp + "] " + userId + ": " + message);
+                writer.newLine();
+            } catch (IOException e) {
+                System.err.println("Error logging message: " + e.getMessage());
+            }
         }
-    }
 
-    public static synchronized void rotateCredentials() {
-        try {
-            if (CHAT_LOG.exists()) {
-                String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-                File archiveDir = new File("archive");
-                if (!archiveDir.exists()) archiveDir.mkdir();
-                File archived = new File(archiveDir, "messages_" + timestamp + ".log");
-                CHAT_LOG.renameTo(archived);
-                CHAT_LOG.createNewFile();
+        private void broadcast(String message) {
+            synchronized (clients) {
+                for (ClientHandler client : clients) {
+                    if (client != this) {
+                        client.out.println(message);
+                    }
+                }
             }
-
-            String userId = UUID.randomUUID().toString().substring(0, 8);
-            String password = UUID.randomUUID().toString().substring(0, 8);
-            String hash = BCrypt.withDefaults().hashToString(12, password.toCharArray());
-
-            JSONObject obj = new JSONObject();
-            obj.put("userId", userId);
-            obj.put("passwordHash", hash);
-            obj.put("created", new Date().toString());
-
-            try (BufferedWriter writer = new BufferedWriter(new FileWriter(AUTH_FILE))) {
-                writer.write(obj.toString(2));
-            }
-
-            if (adminHandler != null) {
-                adminHandler.sendMessage("🆕 New Client Credentials:\nUser ID: " + userId + "\nPassword: " + password);
-            }
-
-            if (currentClientHandler != null) {
-                currentClientHandler.disconnect();
-                currentClientHandler = null;
-            }
-
-        } catch (Exception e) {
-            System.err.println("Error rotating credentials: " + e.getMessage());
         }
-    }
 
-    public static void saveAdminCredentials(String id, String password) {
-        String hash = BCrypt.withDefaults().hashToString(12, password.toCharArray());
-        JSONObject obj = new JSONObject();
-        obj.put("adminId", id);
-        obj.put("passwordHash", hash);
-        obj.put("created", new Date().toString());
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(ADMIN_FILE))) {
-            writer.write(obj.toString(2));
-        } catch (IOException e) {
-            System.err.println("Error saving admin credentials.");
+        public void sendMessage(String message) {
+            out.println(message);
+        }
+
+        public void disconnect() {
+            try {
+                out.println("🔒 Your session has been closed.");
+                socket.close();
+            } catch (IOException ignored) {
+            }
         }
     }
 }
